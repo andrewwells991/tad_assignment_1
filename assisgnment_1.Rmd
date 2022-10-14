@@ -1,0 +1,200 @@
+---
+title: "text_as_data_assignment_1"
+author: "Andrew Wells"
+date: "10/6/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Loading packages
+library(pacman)
+p_load(tidyverse, rvest, quanteda, quanteda.textstats, patchwork, xml2, XML)
+```
+
+## Scraping/getting text
+
+```{r echo=TRUE, include=TRUE}
+url <- "https://www.gutenberg.org/cache/epub/1934/pg1934.txt"
+text <- read_html(url) %>%
+  html_nodes("p") %>%
+  html_text()
+```
+
+## Parsing text
+
+I had trouble working with Regex, so tried this (very messy) work around to acquire the data and put it in the proper dataframe. 
+
+```{r echo=TRUE, include=TRUE}
+lines <- str_split(text, "\r\n")[[1]] #Extract all lines from website
+lines <- str_trim(lines) #Remove spaces before text
+df_lines <- as.data.frame(lines) #Create df with all lines from website as a row
+df_lines <- df_lines[-(1:105), , drop = FALSE] #Clean unnecessary rows
+df_lines <- head(df_lines,-352) #Clean unnecessary rows
+rownames(df_lines) = seq(length=nrow(df_lines)) #Re-setting sequencing numbers in df
+
+df_lines$temp_poem <- gsub("[a-z ][a-z ]+", "", df_lines$lines) #Creating new column with poem and book names
+
+df <- df_lines %>% #Cleaning data so only poem and book names are in column
+  mutate(temp_poem2 = case_when(
+    lines == temp_poem ~ temp_poem,
+    lines != temp_poem ~ " "
+    )) %>%
+  select(-c(temp_poem)) %>% #Remove "messy" poem column
+  na_if("") %>% #Fill blank rows with NAs
+  na_if(" ") %>%
+  fill(temp_poem2, .direction = "downup") %>% #Fill in poem titles
+  mutate(poem_title = case_when(
+    lines == temp_poem2 ~ "NA",
+    lines != temp_poem2 ~ temp_poem2)) %>%
+  mutate(book_title = ifelse(lines %in% "SONGS OF INNOCENCE", "Songs of Innocence",
+                       ifelse(lines %in% "SONGS OF EXPERIENCE", "Songs of Experience",
+                              NA))) %>% #Filling in book titles
+  fill(book_title, .direction = "downup")
+
+df <- df[-(1:8), , drop = FALSE] #Dropping first unnecessary rows
+
+df <- df %>%
+  mutate(stan_1 = ifelse(grepl("[a-z]", lines), 0, 1)) %>% #Create column that identifies new stanzas
+  fill(poem_title, .direction = "downup") %>% #Completely fill poems
+  select(-c(temp_poem2)) %>% #Remove unnecessary poem column
+  group_by(poem_title) %>%
+  mutate(stan_2 = cumsum(ifelse(is.na(stan_1), 0, stan_1))) %>% #Creating a column that adds stanzas
+  mutate(stan_n = stan_2 + 1) %>% #Index stanza column
+  drop_na(lines) %>% #Drop NAs
+  filter(poem_title != "NA") %>% #Drop NAs
+  group_by(poem_title) %>% 
+  mutate(line_n = row_number()) %>% #Create line number column
+  select(-c(stan_1, stan_2)) #Remove unnecessary stanza columns
+
+#Reordering columns
+col_order <- c("line_n", "lines", "stan_n",
+               "poem_title", "book_title")
+df <- df[, col_order]
+
+df
+```
+
+## Histogram for lines per poem
+
+```{r echo=TRUE, include=TRUE}
+df %>%
+  group_by(poem_title) %>%
+  summarise(lines_numbers = max(line_n)) %>% #Find the number of lines in each poem
+  ggplot(aes(x=lines_numbers)) + geom_histogram(binwidth=1) + #Create plot with lines by number of poems
+  labs(title= "Density of line counts in poems",
+        x ="Number of lines", y = "Count") +
+  theme_minimal()
+```
+
+## Document feature matrix: lines
+
+```{r echo=TRUE, include=TRUE}
+df$lines %>%
+  tokens(remove_punc=TRUE) %>%
+  tokens_remove(pattern=stopwords("en")) %>%
+  tokens_wordstem("english") %>%
+  dfm()
+```
+
+## Document feature matrix: poems
+
+```{r echo=TRUE, include=TRUE}
+df$poem_title %>%
+  tokens(remove_punc=TRUE) %>%
+  tokens_remove(pattern=stopwords("en")) %>%
+  tokens_wordstem("english") %>%
+  dfm()
+```
+
+## Plot comparing frequency of words in each book
+
+```{r echo=TRUE, include=TRUE}
+df_soi <- df %>%
+  filter(book_title == "Songs of Innocence") #Filter for "Song of Innocence"
+
+df_soe <- df %>%
+  filter(book_title == "Songs of Experience") #Filter for "Song of Experience"
+
+dfmat_soi <- df_soi$lines %>% #Document feature matrix for words from SoI
+  tokens(remove_punc=TRUE) %>%
+  tokens_remove(pattern=stopwords("en")) %>%
+  tokens_wordstem("english") %>%
+  dfm()
+
+dfmat_soe <- df_soe$lines %>% #Document feature matrix for words from SoE
+  tokens(remove_punc=TRUE) %>%
+  tokens_remove(pattern=stopwords("en")) %>%
+  tokens_wordstem("english") %>%
+  dfm()
+
+tfreq_soi <- dfmat_soi %>% 
+  textstat_frequency() %>% head(20)
+tfreq_soi$feature <- factor(tfreq_soi$feature, levels=tfreq_soi$feature)
+
+tfreq_soe <- dfmat_soe %>% 
+  textstat_frequency() %>% head(20)
+tfreq_soe$feature <- factor(tfreq_soe$feature, levels=tfreq_soe$feature)
+
+p1 <- ggplot(tfreq_soi, aes(x=frequency, y=feature)) + #Plot of word frequency in SoI
+  geom_col() + theme_minimal() + labs(title= "Most frequent words in \n'Songs of Innocence'", x ="Frequency", y = "Feature")
+
+p2 <- ggplot(tfreq_soe, aes(x=frequency, y=feature)) + #Plot of word frequency in SoE
+  geom_col() + theme_minimal() + labs(title= "Most frequent words in \n'Songs of Experience'", x ="Frequency", y = "Feature")   
+
+plot <- p1 + p2 #Combining plots
+ 
+plot
+```
+
+The figures above represent the the 20 most used words in the books of poems "Songs of Innocence" and "Songs of Experience" by William Blake. Words that are more youthful and hopeful, such as: infant, child, happi(for happy or happiness), laugh, joy, sweet and littl(e) seem to feature more in "Songs of Innocence". The book "Songs of Experience" does feature the words joy, sweet and littl(e) in its 20 most common words, but these are all featured less than in "Songs of Innocence". The 20 most frequent words in "Songs of Experience" have a darker and arguably more mature tone. These words include: heart, morn, fear, weep, love and night. Interestingly, the words father and mother are both in the 20 most frequent words in "Songs of Experience", while the word mother is absent from the 20 most frequent in "Songs on Innocence". 
+
+## Parsing XML text data
+
+```{r echo=TRUE, include=TRUE}
+data <- read_html("https://www.bundestag.de/resource/blob/915286/b3575a3167ddebf1cf988059be7614f6/20059-data.xml") #Acquiring link
+
+vorname <- data %>% html_elements("vorname") #Extracting first names of politicians
+df_vorname <- as_tibble(do.call(rbind, html_attrs(vorname)))
+df_vorname$vorname <- vorname %>% html_text()
+
+nachname <- data %>% html_elements("nachname") #Extracting last names of politicians
+df_nachname <- as_tibble(do.call(rbind, html_attrs(nachname)))
+df_nachname$nachname <- nachname %>% html_text()
+
+namen <- bind_cols(df_vorname, df_nachname)
+namen
+```
+
+## Parsing XML text data
+
+```{r echo=TRUE, include=TRUE}
+redner <- data %>% #Getting elements for speeches
+  html_elements("p[klasse!=redner]") %>%
+  html_text2()
+
+df_parl <- as.data.frame(redner)
+
+db <- df_parl %>%
+  filter(grepl('Dietmar Bartsch', redner)) #Finding mentions of Dr. Dietmar Bartsch (die Linke)
+
+db
+```
+
+## Using regular expressions
+
+```{r echo=TRUE, include=TRUE}
+kohle <- df_parl %>%
+  filter(grepl('kohle|Kohle', redner)) #Finding speeches mentioning coal
+
+kohle
+```
+
+There are 11 speeches containing either kohle or Kohle (coal). 
+
+Max, I reeally tried to properly extract and work with the XML data, but hours of work over multiple days led to almost absolutely nothing. I hope I can work on this in the future.
+
+
